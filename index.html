@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0d1117">
 <title>Fair Fight Trivia</title>
-<!-- Fair Fight Trivia v1.2 · build 2026-07-05.3 -->
+<!-- Fair Fight Trivia v1.3 · build 2026-07-05.4 -->
 <style>
 /* ============================================================
    FAIR FIGHT TRIVIA — one phone, two players, auto-balanced.
@@ -138,10 +138,13 @@ input[type="range"]::-moz-range-thumb{
 }
 #roundsVal{ color:var(--ink); }
 #endBtn{ margin-top:0; }
-select{
-  background:var(--panel2); border:1px solid var(--line); border-radius:12px;
-  color:var(--ink); font-size:16px; padding:12px 14px; width:100%;
+.catGrid{ display:flex; flex-wrap:wrap; gap:8px; }
+.catGrid .cat{
+  padding:8px 12px; border-radius:99px; border:1px solid var(--line);
+  background:var(--panel2); color:var(--muted); font-size:.82rem; font-weight:600;
 }
+.catGrid .cat.on{ background:var(--ink); color:var(--bg); border-color:var(--ink); }
+.chip.cname{ color:var(--muted); border-color:var(--line); text-transform:none; letter-spacing:.02em; }
 .slab{
   display:block; margin-top:16px; font-size:.72rem; font-weight:700;
   letter-spacing:.09em; text-transform:uppercase; color:var(--muted);
@@ -309,6 +312,7 @@ select{
       </div>
 
       <div id="chips">
+        <span id="catChip" class="chip cname hidden"></span>
         <span id="diffChip" class="chip d-easy">EASY</span>
         <span id="exChip" class="chip ex hidden">&#9888; a miss costs 1</span>
         <span id="cbChip" class="chip cb hidden">&#9733; comeback &middot; worth 2</span>
@@ -344,24 +348,9 @@ select{
       <div class="modalHead"><span>Settings <span class="ld" id="verTag"></span></span><button id="setClose" class="x" type="button">&times;</button></div>
       <div class="modalBody">
         <div class="field">
-          <label for="catSel">Question category</label>
-          <select id="catSel">
-            <option value="0">Any category</option>
-            <option value="9">General Knowledge</option>
-            <option value="17">Science &amp; Nature</option>
-            <option value="18">Computers</option>
-            <option value="22">Geography</option>
-            <option value="23">History</option>
-            <option value="21">Sports</option>
-            <option value="11">Film</option>
-            <option value="12">Music</option>
-            <option value="14">Television</option>
-            <option value="15">Video Games</option>
-            <option value="20">Mythology</option>
-            <option value="27">Animals</option>
-            <option value="25">Art</option>
-          </select>
-          <span class="mini">Changing this refreshes the question cache</span>
+          <label>Question categories</label>
+          <div id="catGrid" class="catGrid"></div>
+          <span class="mini">Pick any mix &mdash; questions cycle through every pick once, then reshuffle</span>
         </div>
         <label class="slab">Changelog</label>
         <div id="logBody"></div>
@@ -376,10 +365,11 @@ select{
 /* ============================================================
    FAIR FIGHT TRIVIA — settings you can tweak
    ------------------------------------------------------------
-   Every player has a skill rating that moves with each answer:
-   +SKILL_UP when they get one right, -SKILL_DOWN when they
-   miss. The rating picks their next tier (see TIERS below):
-     below 0.5      = VERY EASY (easy questions, 2 choices)
+   Every player has a skill rating PER CATEGORY that moves with
+   each answer in that category: +SKILL_UP when they get one
+   right, -SKILL_DOWN when they miss. The rating picks their
+   tier (see TIERS below):
+     below 0.5      = SIMPLE (easy questions, 2 choices)
      0.5 - 1.5      = EASY
      1.5 - 2.5      = MEDIUM
      2.5 - 3.5      = HARD
@@ -387,42 +377,64 @@ select{
                       EXPERT_PENALTY — the API has nothing
                       harder than "hard", so the stakes become
                       the difficulty)
-   With SKILL_UP 0.30 / SKILL_DOWN 0.45 each player settles at
-   the tier where they answer about 60% correctly, which is
-   what keeps the two scores close. The start-screen selector
-   sets each player's opening rating (0-4); it adapts from
-   there. The score gap still nudges the rating (GAP_WEIGHT per
-   point of lead, capped at GAP_MAX), and anyone trailing by
-   COMEBACK_GAP+ scores double.
-   Questions come only from the Open Trivia DB: a background
-   loop keeps a rolling cache of CACHE_TARGET questions per
-   difficulty (one request per ~5.5 s — the API's rate limit),
-   topping up whichever pool is lowest as questions get used.
-   If the cache runs completely dry with no connection, the
-   game pauses and resumes on its own once questions arrive.
+   Ratings start at the player's chosen level and settle where
+   they answer ~60% correctly in each category, so a science
+   ace still gets gentle film questions if film isn't their
+   thing. The score gap vs the current leader nudges every
+   rating (GAP_WEIGHT per point of lead, capped at GAP_MAX),
+   and anyone trailing the leader by COMEBACK_GAP+ scores
+   double.
+   Questions cycle through the selected categories in shuffled
+   rounds: every category comes up once, then the order
+   reshuffles. A background loop keeps CACHE_TARGET questions
+   cached per difficulty, per selected category (one request
+   per ~5.5 s — the API's rate limit), seeding brand-new
+   categories with a mixed pull first. If everything runs dry
+   with no connection, the game pauses and resumes on its own
+   once questions arrive.
    ============================================================ */
 const CFG = {
   SKILL_UP: 0.30,        // rating gain per correct answer
   SKILL_DOWN: 0.45,      // rating loss per miss
-  SKILL_MIN: -0.6,       // headroom below VERY EASY
+  SKILL_MIN: -0.6,       // headroom below SIMPLE
   SKILL_MAX: 4.6,        // headroom above EXPERT
   GAP_WEIGHT: 0.25,      // score-gap nudge per point of lead
   GAP_MAX: 1.0,          // gap nudge caps at one full tier
   EXPERT_PENALTY: 1,     // points lost for missing an EXPERT question
   COMEBACK_GAP: 3,       // trail by this many -> correct answers score 2
-  CATEGORY: 9,           // OpenTDB category: 9 = General Knowledge, 0 = everything
+  CATEGORY: 9,           // category selected by default (9 = General Knowledge)
   FETCH_TIMEOUT: 6000,   // ms before giving up on the API
   MIN_FETCH_GAP: 5500,   // OpenTDB rate limit is ~1 request / 5 s
-  CACHE_TARGET: 10       // keep this many questions cached per difficulty
+  CACHE_TARGET: 6        // cached questions per difficulty, per selected category
 };
 
-const VERSION = "1.2";
+const VERSION = "1.3";
 const PCOLORS = ["#2fd6c6", "#ffb02e", "#ff7eb6", "#7aa2ff", "#a3e635", "#c084fc"];
+const CATS = [
+  {id:9,  n:"General Knowledge"},
+  {id:17, n:"Science & Nature"},
+  {id:18, n:"Computers"},
+  {id:22, n:"Geography"},
+  {id:23, n:"History"},
+  {id:21, n:"Sports"},
+  {id:11, n:"Film"},
+  {id:12, n:"Music"},
+  {id:14, n:"Television"},
+  {id:15, n:"Video Games"},
+  {id:20, n:"Mythology"},
+  {id:27, n:"Animals"},
+  {id:25, n:"Art"}
+];
 function hexDim(hex){
   const n = parseInt(hex.slice(1), 16);
   return "rgba(" + (n >> 16 & 255) + "," + (n >> 8 & 255) + "," + (n & 255) + ",.13)";
 }
 const CHANGELOG = [
+  {v:"1.3", d:"2026-07-05", n:[
+    "Pick multiple categories \u2014 questions cycle through them in shuffled rounds",
+    "Separate skill rating per category, per player",
+    "Every question now shows its category",
+    "Smarter cache: per-category pools with mixed seeding and targeted top-ups"]},
   {v:"1.2", d:"2026-07-05", n:[
     "Settings menu (gear) with a question-category picker",
     "End-of-game stats: accuracy, best streak, and top tier per player",
@@ -477,17 +489,17 @@ const TIERS = [
   {key:"expert", label:"EXPERT",    cls:"d-expert", pool:"hard",   choices:4}
 ];
 function clamp(x, lo, hi){ return Math.min(hi, Math.max(lo, x)); }
-function levelFor(me, topOther){
-  const lead = me.score - topOther;
+function levelFor(skill, myScore, topOther){
+  const lead = myScore - topOther;
   const nudge = clamp(lead * CFG.GAP_WEIGHT, -CFG.GAP_MAX, CFG.GAP_MAX);
-  return clamp(Math.floor(me.skill + nudge + 0.5), 0, TIERS.length - 1);
+  return clamp(Math.floor(skill + nudge + 0.5), 0, TIERS.length - 1);
 }
 function scoreDelta(ok, pts, tier){
   if(ok) return pts;
   return TIERS[tier].key === "expert" ? -CFG.EXPERT_PENALTY : 0;
 }
-function updateSkill(p, correct){
-  p.skill = clamp(p.skill + (correct ? CFG.SKILL_UP : -CFG.SKILL_DOWN), CFG.SKILL_MIN, CFG.SKILL_MAX);
+function bumpSkill(s, correct){
+  return clamp(s + (correct ? CFG.SKILL_UP : -CFG.SKILL_DOWN), CFG.SKILL_MIN, CFG.SKILL_MAX);
 }
 function pointsFor(me, topOther){
   return (topOther - me.score) >= CFG.COMEBACK_GAP ? 2 : 1;
@@ -502,9 +514,10 @@ const state = {
   playerCount: 2,
   startSkill: [1, 3, 1, 1, 1, 1],
   turn:0, qNum:0, totalQ:20, rounds:10, suddenDeath:false,
-  category: CFG.CATEGORY,
-  pool:{easy:[], medium:[], hard:[]},
-  cooldown:{easy:0, medium:0, hard:0},
+  categories:[CFG.CATEGORY],
+  catBag:[],
+  pools:{},        /* pools[catId] = {easy:[], medium:[], hard:[]} */
+  cooldown:{},     /* keyed "cat-diff" or "cat-mix" -> retry-after timestamp */
   seen:new Set(),   // questions currently or previously stocked from the API
   used:new Set(),   // questions already asked this session
   lastFetch:0, online:true, waiting:false,
@@ -512,7 +525,6 @@ const state = {
 };
 
 /* ---------- Open Trivia DB ---------- */
-function catParam(){ return state.category ? "&category=" + state.category : ""; }
 async function apiFetch(params){
   const ctrl = new AbortController();
   const timer = setTimeout(()=>ctrl.abort(), CFG.FETCH_TIMEOUT);
@@ -535,51 +547,75 @@ function decodeItem(r){
     const c = decodeURIComponent(r.correct_answer);
     const w = (r.incorrect_answers || []).map(decodeURIComponent);
     const d = r.difficulty;
+    const catName = decodeURIComponent(r.category || "").split(":").pop().trim();
     if(!q || !c || w.length !== 3 || w.includes(c)) return null;
     if(d !== "easy" && d !== "medium" && d !== "hard") return null;
-    return {q, c, w, d};
+    return {q, c, w, d, catName};
   }catch(err){ return null; }
 }
-function stock(items){
+function stock(items, cat){
+  ensurePools(cat);
   let added = 0;
   for(const it of items){
     const k = normQ(it.q);
     if(state.seen.has(k) || state.used.has(k)) continue;
     state.seen.add(k);
-    state.pool[it.d].push(it);
+    it.cat = cat;
+    state.pools[cat][it.d].push(it);
     added++;
   }
   return added;
 }
-/* Background cache: one loop keeps every difficulty stocked to
-   CACHE_TARGET, refilling the lowest pool first, one request per
-   MIN_FETCH_GAP. Runs from page load so the cache is warm before
-   the first game starts. */
+function ensurePools(cat){
+  if(!state.pools[cat]) state.pools[cat] = {easy:[], medium:[], hard:[]};
+}
+function poolTotal(cat){
+  const p = state.pools[cat];
+  return p ? p.easy.length + p.medium.length + p.hard.length : 0;
+}
+/* Background cache: one loop keeps every selected category stocked
+   to CACHE_TARGET per difficulty, one request per MIN_FETCH_GAP.
+   A category with nothing cached gets a mixed seed pull first so it
+   becomes playable in a single request. Runs from page load. */
 let fetching = false;
-function neediestPool(){
-  let best = null, bestLen = CFG.CACHE_TARGET;
-  for(const d of ["easy", "medium", "hard"]){
-    if(Date.now() < state.cooldown[d]) continue;   /* this difficulty ran dry recently */
-    if(state.pool[d].length < bestLen){ best = d; bestLen = state.pool[d].length; }
+function nextFetchJob(){
+  const now = Date.now();
+  for(const cat of state.categories){
+    ensurePools(cat);
+    const key = cat + "-mix";
+    if(poolTotal(cat) === 0 && now >= (state.cooldown[key] || 0)){
+      return {cat, key, params:"amount=10&type=multiple&encode=url3986&category=" + cat};
+    }
   }
-  return best;
+  let best = null, bestLen = CFG.CACHE_TARGET;
+  for(const cat of state.categories){
+    for(const d of ["easy", "medium", "hard"]){
+      const key = cat + "-" + d;
+      if(now < (state.cooldown[key] || 0)) continue;   /* ran dry recently */
+      const len = state.pools[cat][d].length;
+      if(len < bestLen){ best = {cat, d, key, len}; bestLen = len; }
+    }
+  }
+  if(!best) return null;
+  const need = CFG.CACHE_TARGET - best.len;
+  return {cat:best.cat, key:best.key,
+          params:"amount=" + need + "&type=multiple&difficulty=" + best.d + "&encode=url3986&category=" + best.cat};
 }
 async function pump(){
   if(fetching) return;
   if(Date.now() - state.lastFetch < CFG.MIN_FETCH_GAP) return;
-  const d = neediestPool();
-  if(!d) return;
+  const job = nextFetchJob();
+  if(!job) return;
   fetching = true;
-  const need = CFG.CACHE_TARGET - state.pool[d].length;
-  const items = await apiFetch("amount=" + need + "&type=multiple&difficulty=" + d + "&encode=url3986" + catParam());
+  const items = await apiFetch(job.params);
   fetching = false;
   if(items === null){ setOnline(false); return; }
   setOnline(true);
-  const added = items.length ? stock(items) : 0;
+  const added = items.length ? stock(items, job.cat) : 0;
   if(added === 0){
-    /* the API answered but had nothing new at this difficulty in the
-       chosen category — back off a minute so other pools still fill */
-    state.cooldown[d] = Date.now() + 60000;
+    /* the API answered but had nothing new for this bucket —
+       back off a minute so the other pools still fill */
+    state.cooldown[job.key] = Date.now() + 60000;
   }else if(state.waiting){
     resumeFromWaiting();
   }
@@ -589,12 +625,22 @@ const FALLBACK = {
   medium:["medium","easy","hard"],
   hard:["hard","medium","easy"]
 };
-function takeQuestion(d){
+function nextCategory(){
+  if(state.catBag.length === 0) state.catBag = shuffle(state.categories.slice());
+  return state.catBag.pop();
+}
+function drawFrom(cat, d){
+  const pools = state.pools[cat];
+  if(!pools) return null;
   for(const dd of FALLBACK[d]){
-    const p = state.pool[dd];
+    const p = pools[dd];
     if(p.length) return p.splice(Math.floor(Math.random() * p.length), 1)[0];
   }
-  return null;   /* every pool is dry — caller shows the paused state */
+  return null;   /* this category is dry — caller tries the next one */
+}
+function catSkill(p, cat){
+  if(!(cat in p.skills)) p.skills[cat] = p.baseSkill;
+  return p.skills[cat];
 }
 
 /* ---------- game flow ---------- */
@@ -642,12 +688,17 @@ function setAccent(i){
 function nextTurn(){
   const me  = state.players[state.turn];
   const top = topOtherScore(state.turn);
-  const tier = levelFor(me, top);
-  const t = TIERS[tier];
-  const item = takeQuestion(t.pool);
+  let item = null, tier = 0;
+  const tries = Math.max(1, state.categories.length);
+  for(let i = 0; i < tries && !item; i++){
+    const cat = nextCategory();
+    tier = levelFor(catSkill(me, cat), me.score, top);
+    item = drawFrom(cat, TIERS[tier].pool);
+  }
   if(!item){ showWaiting(); return; }
   state.waiting = false;
   state.used.add(normQ(item.q));
+  const t = TIERS[tier];
   const wrongs = shuffle(item.w.slice()).slice(0, t.choices - 1);
   const answers = shuffle([item.c].concat(wrongs));
   state.current = {
@@ -664,6 +715,7 @@ function showWaiting(){
   setAccent(state.turn);
   $("turnName").textContent = state.players[state.turn].name;
   $("bannerSub").textContent = "The question cache is empty and the trivia API can\u2019t be reached right now.";
+  $("catChip").classList.add("hidden");
   $("diffChip").className = "chip hidden";
   $("exChip").classList.add("hidden");
   $("cbChip").classList.add("hidden");
@@ -692,6 +744,9 @@ function renderQuestion(){
   $("bannerSub").textContent = "Pass the phone, or read it aloud and tap the letter " + me.name + " calls.";
 
   const t = TIERS[cur.tier];
+  const cc = $("catChip");
+  cc.textContent = cur.item.catName || "";
+  cc.classList.toggle("hidden", !cur.item.catName);
   const chip = $("diffChip");
   chip.textContent = t.label;
   chip.className = "chip " + t.cls;
@@ -748,7 +803,7 @@ function onAnswer(i){
 
   const delta = scoreDelta(ok, cur.pts, cur.tier);
   me.score += delta;
-  updateSkill(me, ok);
+  me.skills[cur.item.cat] = bumpSkill(catSkill(me, cur.item.cat), ok);
   me.asked++;
   if(ok){
     me.correct++;
@@ -927,7 +982,8 @@ $("startBtn").addEventListener("click", ()=>{
     players.push({
       name: $("name" + i).value.trim() || "Player " + (i + 1),
       score: 0,
-      skill: state.startSkill[i],
+      baseSkill: state.startSkill[i],
+      skills: {},
       color: PCOLORS[i],
       asked: 0, correct: 0, streak: 0, bestStreak: 0, bestTier: 0
     });
@@ -974,14 +1030,29 @@ $("setClose").addEventListener("click", ()=>{ $("setModal").classList.add("hidde
 $("setModal").addEventListener("click", (e)=>{
   if(e.target === $("setModal")) $("setModal").classList.add("hidden");
 });
-const catSel = $("catSel");
-catSel.value = String(state.category);
-catSel.addEventListener("change", ()=>{
-  state.category = parseInt(catSel.value, 10);
-  state.pool.easy = []; state.pool.medium = []; state.pool.hard = [];
-  state.cooldown = {easy:0, medium:0, hard:0};
-  pump();
-});
+(function buildCatGrid(){
+  const grid = $("catGrid");
+  for(const c of CATS){
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "cat" + (state.categories.includes(c.id) ? " on" : "");
+    b.textContent = c.n;
+    b.addEventListener("click", ()=>{
+      const i = state.categories.indexOf(c.id);
+      if(i > -1){
+        if(state.categories.length === 1) return;   /* keep at least one */
+        state.categories.splice(i, 1);
+        b.classList.remove("on");
+      }else{
+        state.categories.push(c.id);
+        b.classList.add("on");
+      }
+      state.catBag = [];
+      pump();
+    });
+    grid.appendChild(b);
+  }
+})();
 
 /* keep the question cache stocked from the moment the app loads */
 setInterval(pump, 1000);
